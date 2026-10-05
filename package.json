@@ -1,0 +1,8 @@
+{
+  "name": "evd-tts-bot-voz",
+  "version": "1.0.0",
+  "description": "Servicio de voz neuronal gratis (edge-tts) para el bot de Telegram de Él Va Delante",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "msedge-tts": "^1.3.4" }
+}

@@ -12,6 +12,7 @@
 // Preferir IPv4: algunos contenedores tienen IPv6 roto y undici/ws fallan con "Connect Error".
 try { require('dns').setDefaultResultOrder('ipv4first'); } catch (e) {}
 const http = require('http');
+const https = require('https');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -26,6 +27,10 @@ const VOICE_DEF = process.env.TTS_VOICE || 'es-CL-LorenzoNeural';
 const TG_TOKEN = process.env.TELEGRAM_TOKEN || '';
 const TG_CHAT  = process.env.TELEGRAM_CHAT  || '';   // @canal o id numérico
 const DATA_DIR = process.env.DATA_DIR || __dirname;
+// Voz propia (ElevenLabs) — si defines ELEVEN_KEY, usa TU voz clonada (y cachea cada devocional).
+const EL_KEY   = process.env.ELEVEN_KEY   || '';
+const EL_VOICE = process.env.ELEVEN_VOICE || 'caIi3SG6EwWbOAqVAk2N'; // "javier conversasional"
+const EL_MODEL = process.env.ELEVEN_MODEL || 'eleven_multilingual_v2';
 
 function send(res, code, type, body) {
   res.writeHead(code, { 'Content-Type': type, 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type,x-api-key' });
@@ -64,8 +69,30 @@ function transcode(inPath, fmt) {
   });
 }
 
+// ---- Voz propia: ElevenLabs (mp3) -> OGG/Opus ----
+function elevenMp3(text) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ text, model_id: EL_MODEL, voice_settings: { stability: 0.5, similarity_boost: 0.8 } });
+    const r = https.request({
+      hostname: 'api.elevenlabs.io', path: '/v1/text-to-speech/' + EL_VOICE, method: 'POST',
+      headers: { 'xi-api-key': EL_KEY, 'content-type': 'application/json', 'accept': 'audio/mpeg', 'content-length': Buffer.byteLength(body) }
+    }, resp => {
+      const chunks = []; resp.on('data', c => chunks.push(c));
+      resp.on('end', () => resp.statusCode === 200 ? resolve(Buffer.concat(chunks)) : reject(new Error('ElevenLabs ' + resp.statusCode + ' ' + Buffer.concat(chunks).toString().slice(0, 160))));
+    });
+    r.on('error', reject); r.write(body); r.end();
+  });
+}
+async function elevenOgg(text) {
+  const mp3 = await elevenMp3(text);
+  const tmp = path.join(os.tmpdir(), 'el_' + process.pid + '_' + Date.now() + '.mp3');
+  fs.writeFileSync(tmp, mp3);
+  const ogg = await transcode(tmp, 'ogg');
+  fs.unlink(tmp, () => {});
+  return ogg;
+}
+
 // ---- Telegram sendVoice (texto como caption) + fallback texto largo ----
-const https = require('https');
 function tgCall(method, fields, fileField) {
   return new Promise((resolve, reject) => {
     const boundary = '----evd' + Date.now();
@@ -100,8 +127,24 @@ function nextDevocional() {
   return { text: (item.text || item), i: i % list.length };
 }
 
-async function publicar(text, preOgg) {
+async function publicar(text, preOgg, idx) {
   let ogg = preOgg;
+  // 1) TU voz (ElevenLabs), cacheada por devocional para casi no gastar créditos
+  if (!ogg && EL_KEY) {
+    try {
+      if (idx != null) {
+        const cf = path.join(DATA_DIR, 'elvoz_' + idx + '.ogg');
+        if (fs.existsSync(cf)) ogg = fs.readFileSync(cf);
+        else { ogg = await elevenOgg(text); try { fs.writeFileSync(cf, ogg); } catch (e) {} }
+      } else { ogg = await elevenOgg(text); }
+    } catch (e) { console.log('ElevenLabs falló, uso respaldo:', e.message); }
+  }
+  // 2) Respaldo: voz pre-hecha (edge) por índice
+  if (!ogg && idx != null) {
+    const vf = path.join(__dirname, 'voces', idx + '.ogg');
+    if (fs.existsSync(vf)) ogg = fs.readFileSync(vf);
+  }
+  // 3) Respaldo final: edge en vivo
   if (!ogg) {
     const webm = await synthWebm(text, VOICE_DEF);
     ogg = await transcode(webm, 'ogg');
@@ -132,10 +175,10 @@ const server = http.createServer((req, res) => {
         if (KEY && req.headers['x-api-key'] !== KEY) return send(res, 401, 'text/plain', 'unauthorized');
         const b = raw ? JSON.parse(raw) : {};
         let text = (b.text || '').toString().trim();
-        let preOgg = null;
-        if (!text) { const d = nextDevocional(); if (d) { text = d.text; const vf = path.join(__dirname, 'voces', d.i + '.ogg'); if (fs.existsSync(vf)) preOgg = fs.readFileSync(vf); } }
+        let idx = null;
+        if (!text) { const d = nextDevocional(); if (d) { text = d.text; idx = d.i; } }
         if (!text) return send(res, 400, 'text/plain', 'sin texto ni devocionales.json');
-        const out = await publicar(text, preOgg);
+        const out = await publicar(text, null, idx);
         send(res, 200, 'application/json', JSON.stringify(out));
       } catch (e) { send(res, 500, 'text/plain', 'error: ' + (e && e.message || e)); }
     });

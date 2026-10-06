@@ -9,6 +9,8 @@
           -> audio/ogg (nota de voz)  |  format:"mp3" -> audio/mpeg
    Seguridad opcional: si defines TTS_KEY, exige header  x-api-key.
    ════════════════════════════════════════════════════════════ */
+// Preferir IPv4: algunos contenedores tienen IPv6 roto y undici/ws fallan con "Connect Error".
+try { require('dns').setDefaultResultOrder('ipv4first'); } catch (e) {}
 const http = require('http');
 const { spawn } = require('child_process');
 const fs = require('fs');

@@ -97,13 +97,16 @@ function nextDevocional() {
   let i = 0; try { i = JSON.parse(fs.readFileSync(stateFile, 'utf8')).i || 0; } catch (e) {}
   const item = list[i % list.length];
   try { fs.writeFileSync(stateFile, JSON.stringify({ i: (i + 1) % list.length })); } catch (e) {}
-  return item;
+  return { text: (item.text || item), i: i % list.length };
 }
 
-async function publicar(text) {
-  const webm = await synthWebm(text, VOICE_DEF);
-  const ogg = await transcode(webm, 'ogg');
-  fs.unlink(webm, () => {});
+async function publicar(text, preOgg) {
+  let ogg = preOgg;
+  if (!ogg) {
+    const webm = await synthWebm(text, VOICE_DEF);
+    ogg = await transcode(webm, 'ogg');
+    fs.unlink(webm, () => {});
+  }
   if (!TG_TOKEN || !TG_CHAT) {
     return { ok: false, reason: 'faltan TELEGRAM_TOKEN/TELEGRAM_CHAT', audioBytes: ogg.length, textPreview: text.slice(0, 80) };
   }
@@ -129,9 +132,10 @@ const server = http.createServer((req, res) => {
         if (KEY && req.headers['x-api-key'] !== KEY) return send(res, 401, 'text/plain', 'unauthorized');
         const b = raw ? JSON.parse(raw) : {};
         let text = (b.text || '').toString().trim();
-        if (!text) { const d = nextDevocional(); text = d ? (d.text || d.texto || d) : ''; }
+        let preOgg = null;
+        if (!text) { const d = nextDevocional(); if (d) { text = d.text; const vf = path.join(__dirname, 'voces', d.i + '.ogg'); if (fs.existsSync(vf)) preOgg = fs.readFileSync(vf); } }
         if (!text) return send(res, 400, 'text/plain', 'sin texto ni devocionales.json');
-        const out = await publicar(text);
+        const out = await publicar(text, preOgg);
         send(res, 200, 'application/json', JSON.stringify(out));
       } catch (e) { send(res, 500, 'text/plain', 'error: ' + (e && e.message || e)); }
     });
